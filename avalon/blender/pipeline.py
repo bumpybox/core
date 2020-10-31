@@ -271,8 +271,6 @@ def containerise_existing(
     """
 
     node_name = container.name
-    if namespace:
-        node_name = f"{namespace}:{node_name}"
     if suffix:
         node_name = f"{node_name}_{suffix}"
     container.name = node_name
@@ -397,10 +395,3 @@ class Loader(api.Loader):
     """Base class for Loader plug-ins."""
 
     hosts = ["blender"]
-
-    def __init__(self, context):
-        super().__init__(context)
-        self.fname = self.fname.replace(
-            api.registered_root(),
-            "$AVALON_PROJECTS",
-        )

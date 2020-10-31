@@ -28,8 +28,13 @@ class AssetWidget(QtWidgets.QWidget):
     selection_changed = QtCore.Signal()  # on view selection change
     current_changed = QtCore.Signal()    # on view current index change
 
-    def __init__(self, multiselection=False, parent=None):
+    def __init__(self, multiselection=False, dbcon=None, parent=None):
         super(AssetWidget, self).__init__(parent=parent)
+
+        if dbcon is None:
+            dbcon = io
+        self.dbcon = dbcon
+
         self.setContentsMargins(0, 0, 0, 0)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -37,7 +42,7 @@ class AssetWidget(QtWidgets.QWidget):
         layout.setSpacing(4)
 
         # Tree View
-        model = AssetModel(self)
+        model = AssetModel(dbcon=self.dbcon, parent=self)
         proxy = RecursiveSortFilterProxyModel()
         proxy.setSourceModel(model)
         proxy.setFilterCaseSensitivity(QtCore.Qt.CaseInsensitive)
@@ -90,12 +95,12 @@ class AssetWidget(QtWidgets.QWidget):
         self._refresh_model()
 
     def get_active_asset(self):
-        """Return the asset id the current asset."""
+        """Return the asset item of the current selection."""
         current = self.view.currentIndex()
         return current.data(self.model.ItemRole)
 
     def get_active_asset_document(self):
-        """Return the asset id the current asset."""
+        """Return the asset document of the current selection."""
         current = self.view.currentIndex()
         return current.data(self.model.DocumentRole)
 
@@ -131,13 +136,12 @@ class AssetWidget(QtWidgets.QWidget):
         the more asset, only the first found will be selected.
 
         """
-        # TODO: Instead of individual selection optimize for many assets
 
         if not isinstance(assets, (tuple, list)):
             assets = [assets]
 
         # convert to list - tuple cant be modified
-        assets = list(assets)
+        assets = set(assets)
 
         # Clear selection
         selection_model = self.view.selectionModel()
@@ -157,10 +161,9 @@ class AssetWidget(QtWidgets.QWidget):
                 continue
 
             # Remove processed asset
-            assets.pop(assets.index(value))
+            assets.discard(value)
 
             selection_model.select(index, mode)
-
             if expand:
                 # Expand parent index
                 self.view.expand(self.proxy.parent(index))

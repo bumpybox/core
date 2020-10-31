@@ -1,10 +1,9 @@
 import sys
 import os
+import copy
 import getpass
-import re
 import shutil
 import logging
-import platform
 
 from ...vendor.Qt import QtWidgets, QtCore
 from ... import style, io, api, pipeline
@@ -16,6 +15,8 @@ from ..delegates import PrettyTimeDelegate
 
 from .model import FilesModel
 from .view import FilesView
+
+from pypeapp import Anatomy
 
 log = logging.getLogger(__name__)
 
@@ -61,12 +62,8 @@ class NameWindow(QtWidgets.QDialog):
         }
 
         # Define work files template
-        templates = project["config"]["template"]
-        template = templates.get(
-            "workfile",
-            "{task[name]}_v{version:0>4}<_{comment}>"
-        )
-        self.template = template
+        anatomy = Anatomy(project["name"])
+        self.template = anatomy.templates["work"]["file"]
 
         self.widgets = {
             "preview": QtWidgets.QLabel("Preview filename"),
@@ -146,29 +143,8 @@ class NameWindow(QtWidgets.QDialog):
         return self.result
 
     def get_work_file(self, template=None):
-        data = self.data.copy()
+        data = copy.deepcopy(self.data)
         template = template or self.template
-
-        if not data["comment"]:
-            data.pop("comment", None)
-
-        # Remove optional missing keys
-        pattern = re.compile(r"<.*?>")
-        invalid_optionals = []
-        for group in pattern.findall(template):
-            try:
-                group.format(**data)
-            except KeyError:
-                invalid_optionals.append(group)
-
-        for group in invalid_optionals:
-            template = template.replace(group, "")
-
-        work_file = template.format(**data)
-
-        # Remove optional symbols
-        work_file = work_file.replace("<", "")
-        work_file = work_file.replace(">", "")
 
         # Define saving file extension
         current_file = self.host.current_file()
@@ -179,12 +155,14 @@ class NameWindow(QtWidgets.QDialog):
             # Fall back to the first extension supported for this host.
             extension = self.host.file_extensions()[0]
 
-        work_file = work_file + extension
+        data["ext"] = extension
 
-        return work_file
+        if not data["comment"]:
+            data.pop("comment", None)
+
+        return api.format_template_with_optional_keys(data, template)
 
     def refresh(self):
-
         # Since the version can be padded with "{version:0>4}" we only search
         # for "{version".
         if "{version" not in self.template:
@@ -199,42 +177,21 @@ class NameWindow(QtWidgets.QDialog):
         if self.widgets["versionCheck"].isChecked():
             self.widgets["versionValue"].setEnabled(False)
 
-            # Find matching files
-            files = os.listdir(self.root) if os.path.exists(self.root) else []
-
-            # Fast match on extension
             extensions = self.host.file_extensions()
-            files = [f for f in files if os.path.splitext(f)[1] in extensions]
+            data = copy.deepcopy(self.data)
+            template = str(self.template)
 
-            # Build template without optionals, version to digits only regex
-            # and comment to any definable value.
-            # Note: with auto-increment the `version` key may not be optional.
-            template = self.template
-            template = re.sub("<.*?>", ".*?", template)
-            template = re.sub("{version.*}", "([0-9]+)", template)
-            template = re.sub("{comment.*?}", ".+?", template)
-            template = self.get_work_file(template)
-            template = "^" + template + "$"           # match beginning to end
+            if not data["comment"]:
+                data.pop("comment", None)
 
-            # Match with ignore case on Windows due to the Windows
-            # OS not being case-sensitive. This avoids later running
-            # into the error that the file did exist if it existed
-            # with a different upper/lower-case.
-            kwargs = {}
-            if platform.system() == "Windows":
-                kwargs["flags"] = re.IGNORECASE
+            version = api.last_workfile_with_version(
+                self.root, template, data, extensions
+            )[1]
 
-            # Get highest version among existing matching files
-            version = 1
-            for file in sorted(files):
-                match = re.match(template, file, **kwargs)
-                if not match:
-                    continue
-
-                file_version = int(match.group(1))
-
-                if file_version >= version:
-                    version = file_version + 1
+            if version is None:
+                version = 1
+            else:
+                version += 1
 
             self.data["version"] = version
 
@@ -310,7 +267,7 @@ class TasksWidget(QtWidgets.QWidget):
         if current:
             self._last_selected_task = current
 
-        self.models["tasks"].set_assets(asset_entities=[asset])
+        self.models["tasks"].set_assets(asset_docs=[asset])
 
         if self._last_selected_task:
             self.select_task(self._last_selected_task)
@@ -518,7 +475,8 @@ class FilesWidget(QtWidgets.QWidget):
                 pass
 
         self._enter_session()
-        return host.open_file(filepath)
+        host.open_file(filepath)
+        self.window().close()
 
     def save_changes_prompt(self):
         self._messagebox = QtWidgets.QMessageBox()
@@ -597,7 +555,7 @@ class FilesWidget(QtWidgets.QWidget):
             print("No file selected to open..")
             return
 
-        return self.open_file(path)
+        self.open_file(path)
 
     def on_browse_pressed(self):
 
@@ -791,6 +749,16 @@ class Window(QtWidgets.QMainWindow):
 
         self.resize(900, 600)
 
+    def keyPressEvent(self, event):
+        """Custom keyPressEvent.
+
+        Override keyPressEvent to do nothing so that Maya's panels won't
+        take focus when pressing "SHIFT" whilst mouse is over viewport or
+        outliner. This way users don't accidently perform Maya commands
+        whilst trying to name an instance.
+
+        """
+
     def on_task_changed(self):
         # Since we query the disk give it slightly more delay
         tools_lib.schedule(self._on_task_changed, 100, channel="mongo")
@@ -852,13 +820,15 @@ class Window(QtWidgets.QMainWindow):
         files.refresh()
 
 
-def show(root=None, debug=False, parent=None, use_context=True):
+def show(root=None, debug=False, parent=None, use_context=True, save=True):
     """Show Work Files GUI"""
     # todo: remove `root` argument to show()
 
-    if module.window:
+    try:
         module.window.close()
         del(module.window)
+    except (AttributeError, RuntimeError):
+        pass
 
     host = api.registered_host()
     if host is None:
@@ -895,7 +865,13 @@ def show(root=None, debug=False, parent=None, use_context=True):
                        "task": api.Session["AVALON_TASK"]}
             window.set_context(context)
 
+        window.widgets["files"].widgets["save"].setEnabled(save)
+
         window.show()
         window.setStyleSheet(style.load_stylesheet())
 
         module.window = window
+
+        # Pull window to the front.
+        module.window.raise_()
+        module.window.activateWindow()

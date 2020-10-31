@@ -44,6 +44,19 @@ self._database = None
 self._is_installed = False
 
 log = logging.getLogger(__name__)
+PY2 = sys.version_info[0] == 2
+
+
+def extract_port_from_url(url):
+    if PY2:
+        from urlparse import urlparse
+    else:
+        from urllib.parse import urlparse
+    parsed_url = urlparse(url)
+    if parsed_url.scheme is None:
+        _url = "mongodb://{}".format(url)
+        parsed_url = urlparse(_url)
+    return parsed_url.port
 
 
 def install():
@@ -55,8 +68,17 @@ def install():
     Session.update(_from_environment())
 
     timeout = int(Session["AVALON_TIMEOUT"])
-    self._mongo_client = pymongo.MongoClient(
-        Session["AVALON_MONGO"], serverSelectionTimeoutMS=timeout)
+    mongo_url = Session["AVALON_MONGO"]
+    kwargs = {
+        "host": mongo_url,
+        "serverSelectionTimeoutMS": timeout
+    }
+
+    port = extract_port_from_url(mongo_url)
+    if port is not None:
+        kwargs["port"] = int(port)
+
+    self._mongo_client = pymongo.MongoClient(**kwargs)
 
     for retry in range(3):
         try:
@@ -233,17 +255,19 @@ def requires_install(f):
 
 def auto_reconnect(f):
     """Handling auto reconnect in 3 retry times"""
+    retry_times = 3
+
     @functools.wraps(f)
     def decorated(*args, **kwargs):
-        for retry in range(3):
+        for retry in range(1, retry_times + 1):
             try:
                 return f(*args, **kwargs)
             except pymongo.errors.AutoReconnect:
                 log.error("Reconnecting..")
-                time.sleep(0.1)
-        else:
-            raise
-
+                if retry < retry_times:
+                    time.sleep(0.1)
+                else:
+                    raise
     return decorated
 
 
@@ -394,6 +418,12 @@ def update_many(filter, update):
 @auto_reconnect
 def distinct(*args, **kwargs):
     return self._database[Session["AVALON_PROJECT"]].distinct(
+        *args, **kwargs)
+
+
+@auto_reconnect
+def aggregate(*args, **kwargs):
+    return self._database[Session["AVALON_PROJECT"]].aggregate(
         *args, **kwargs)
 
 
