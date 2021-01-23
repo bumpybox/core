@@ -748,15 +748,6 @@ class SwitchAssetDialog(QtWidgets.QDialog):
 
         self.setMinimumWidth(self.MIN_WIDTH)
 
-        # Set initial asset as current.
-        index = self._assets_box.findText(
-            api.Session["AVALON_ASSET"], QtCore.Qt.MatchFixedString
-        )
-        print("asset box index", index)
-        if index >= 0:
-            print("setting asset box")
-            self._assets_box.setCurrentIndex(index)
-
         # Set default focus to accept button so you don't directly type in
         # first asset field, this also allows to see the placeholder value.
         accept_btn.setFocus()
@@ -1102,6 +1093,13 @@ class SwitchAssetDialog(QtWidgets.QDialog):
             asset_doc["name"]
             for asset_doc in asset_box_docs
         )
+        asset_values = sorted(asset_values)
+
+        # Adding current asset as first entry for quick switching.
+        asset_values.insert(
+            0, "{} (current asset)".format(api.Session["AVALON_ASSET"])
+        )
+
         if not subset_box_docs:
             return _output()
 
@@ -1193,6 +1191,9 @@ class SwitchAssetDialog(QtWidgets.QDialog):
         selected_representation = self._representations_box.get_valid_value()
 
         if selected_asset:
+            # Strip current asset user friendly naming.
+            selected_asset = selected_asset.replace(" (current asset)", "")
+
             asset_doc = io.find_one({"type": "asset", "name": selected_asset})
             asset_docs_by_id = {asset_doc["_id"]: asset_doc}
         else:
